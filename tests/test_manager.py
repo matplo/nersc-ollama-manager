@@ -88,7 +88,8 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(self.m.ensure_tunnel(self.record), 34568)
 
     def test_codex_model_and_endpoint(self):
-        with patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
              patch('nersc_ollama_manager.core.request', side_effect=[{'models': [{'name': 'test:latest'}]},
                                                                    {'capabilities': ['tools']} ]):
             command = self.m.codex_command(self.record, 'test', ['--no-alt-screen'])
@@ -98,8 +99,9 @@ class ManagerTests(unittest.TestCase):
             self.m.check_model('test:cloud')
 
     def test_missing_model(self):
-        with patch.object(self.m, 'ensure_tunnel', return_value=34567), \
-             patch('nersc_ollama_manager.core.request', return_value={'models': []}), self.assertRaises(RuntimeError):
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+             patch('nersc_ollama_manager.core.request', return_value={'models': []}), self.assertRaisesRegex(RuntimeError, 'not installed'):
             self.m.codex_command(self.record, 'missing')
 
     def test_login_node_rejected(self):
