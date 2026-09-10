@@ -1,0 +1,83 @@
+name: Test, build, and publish
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+    tags: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install '.[tui]'
+      - run: python -m unittest discover -s tests -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install build twine
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python scripts/check_release.py
+      - run: python -m build --outdir wheelhouse
+      - run: python -m twine check --strict wheelhouse/*
+      - name: Install and check built wheel
+        run: |
+          python -m pip install wheelhouse/*.whl
+          nersc-ollama --version
+          nersc-ollama-tui --help
+          python -c 'from importlib.metadata import distribution; d = distribution("nersc-ollama-manager"); assert {"nersc-ollama", "nersc-ollama-tui", "codex-local"} <= {e.name for e in d.entry_points}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: wheelhouse/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    # Manual runs and branch/PR builds never publish.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/nersc-ollama-manager/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist
+      - name: Publish via PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

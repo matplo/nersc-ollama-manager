@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nersc-ollama-manager"
+version = "0.2.7"
+description = "User-owned Ollama servers in interactive NERSC allocations"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["rich>=13"]
+
+[project.urls]
+Repository = "https://github.com/matplo/nersc-ollama-manager"
+Issues = "https://github.com/matplo/nersc-ollama-manager/issues"
+
+[project.optional-dependencies]
+tui = ["textual>=8"]
+
+[project.scripts]
+nersc-ollama = "nersc_ollama_manager.cli:main"
+nersc-ollama-tui = "nersc_ollama_manager.cli:tui_main"
+codex-local = "nersc_ollama_manager.local:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

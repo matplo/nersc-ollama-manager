@@ -1,0 +1,5 @@
+include QUICK_START.md
+
+include RELEASE.md
+recursive-include scripts *.py
+recursive-include tests *.py
