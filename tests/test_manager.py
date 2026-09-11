@@ -103,6 +103,16 @@ class ManagerTests(unittest.TestCase):
             command = self.m.codex_command(self.record, 'test', ['--no-alt-screen'])
             self.assertIn('model_providers.nersc_ollama.base_url="http://127.0.0.1:34567/v1"', command)
             self.assertEqual(command[-1], '--no-alt-screen')
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+             patch('nersc_ollama_manager.core.request', side_effect=[{'models': [{'name': 'test:latest'}]},
+                                                                   {'capabilities': ['tools']} ]):
+            launch = self.m.codex_launch_info(self.record, 'test')
+            self.assertEqual(launch['server'], self.record['id'])
+            self.assertEqual(launch['context'], 65536)
+            command = self.m.codex_command(self.record, 'test', ['resume', '--last'],
+                                           launch=launch)
+            self.assertEqual(command[-2:], ['resume', '--last'])
         with self.assertRaises(ValueError):
             self.m.check_model('test:cloud')
 

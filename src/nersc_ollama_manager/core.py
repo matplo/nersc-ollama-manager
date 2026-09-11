@@ -692,10 +692,8 @@ class Manager:
         atomic_json(path, catalog, create_only=True)
         return path, context
 
-    def codex_command(self, record, model, extra=(), *, local=False):
-        codex = shutil.which('codex')
-        if not codex:
-            raise RuntimeError('codex is not on PATH; launch from an environment containing Codex.')
+    def codex_launch_info(self, record, model, *, local=False):
+        """Resolve the endpoint and generated metadata used for a Codex launch."""
         self.check_model(model)
         if local:
             if record['host'] != socket.gethostname().split('.')[0]:
@@ -710,6 +708,15 @@ class Manager:
         if 'tools' not in info.get('capabilities', []):
             raise RuntimeError('This model does not advertise tool support required for coding agents.')
         catalog, context = self.codex_catalog(record, model, info)
+        return {'server': record.get('id', '—'), 'host': record.get('host', '—'), 'port': port,
+                'model': model, 'context': context, 'catalog': catalog}
+
+    def codex_command(self, record, model, extra=(), *, local=False, launch=None):
+        codex = shutil.which('codex')
+        if not codex:
+            raise RuntimeError('codex is not on PATH; launch from an environment containing Codex.')
+        launch = launch or self.codex_launch_info(record, model, local=local)
+        port, catalog, context = launch['port'], launch['catalog'], launch['context']
         # Custom provider allows any selected local port without editing user config.
         args = [codex, '-m', model, '-c', 'model_provider="nersc_ollama"',
                 '-c', 'model_providers.nersc_ollama.name="NERSC Ollama"',
