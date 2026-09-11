@@ -17,6 +17,7 @@ class CommandErrorsTests(unittest.TestCase):
             run(['salloc','--time','05:30:00'],stream_errors=True)
         self.assertIn('QOSMaxWallDurationPerJobLimit',str(exc.exception))
         self.assertIn('Job violates accounting/QOS policy',str(exc.exception))
+        self.assertIn('reduce the requested allocation time',str(exc.exception))
         self.assertIn('QOSMaxWallDurationPerJobLimit',output.getvalue())
 
     def test_successful_output_is_streamed(self):

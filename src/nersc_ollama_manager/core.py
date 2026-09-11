@@ -58,6 +58,12 @@ def run(args, **kwargs):
             raise
     if code:
         details = '\n'.join(tail).strip() or 'No diagnostic output was produced.'
+        if 'QOSMaxWallDurationPerJobLimit' in details:
+            details += (
+                '\nHint: reduce the requested allocation time or choose a QOS/account '
+                'that permits that walltime. Perlmutter interactive QOS currently '
+                'allows up to 4 hours; debug QOS allows up to 30 minutes.'
+            )
         raise RuntimeError(f'{command[0]} failed (exit {code}):\n{details}')
     return subprocess.CompletedProcess(command, code)
 
