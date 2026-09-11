@@ -29,9 +29,17 @@ class ManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.m.allocation_command('gpu', 'gpu')
         gpu = self.m.allocation_command('gpu', 'gpu', 'example_g')
-        self.assertEqual(gpu.count('--gpus'), 2)
+        self.assertEqual(gpu.count('--gpus-per-node'), 1)
+        self.assertEqual(gpu.count('--gpus'), 1)
+        self.assertNotIn('--gpu-bind', gpu)
         self.assertIn('example_g', gpu)
         self.assertIn('00:30:00', gpu)
+
+    def test_gpu_spread_disables_step_gpu_binding(self):
+        self.m.set_gpu_spread(True)
+        gpu = self.m.allocation_command('gpu', 'gpu', 'example_g')
+        self.assertIn('--gpu-bind', gpu)
+        self.assertEqual(gpu[gpu.index('--gpu-bind') + 1], 'none')
 
     def test_no_implicit_scheduler_approval(self):
         with patch('os.isatty', return_value=False), self.assertRaises(RuntimeError):

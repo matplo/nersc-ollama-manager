@@ -308,10 +308,12 @@ class Manager:
         if p.get('account'):
             args += ['--account', p['account']]
         if p['gpus']:
-            args += ['--gpus', str(p['gpus'])]
+            args += ['--gpus-per-node', str(p['gpus'])]
         args += ['srun', '--nodes', '1', '--ntasks', '1', '--unbuffered']
         if p['gpus']:
             args += ['--gpus', str(p['gpus'])]
+            if self.gpu_spread():
+                args += ['--gpu-bind', 'none']
         args += [os.sys.executable, '-m', 'nersc_ollama_manager', '--config', str(self.config_path),
                  'serve', '--name', name, '--profile', profile]
         return args
