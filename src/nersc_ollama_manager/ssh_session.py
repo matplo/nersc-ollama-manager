@@ -1,5 +1,6 @@
 """Prepare a private, uniquely named Bash setup file for a node session."""
 import os
+import json
 import shlex
 import sys
 import tempfile
@@ -12,6 +13,8 @@ def session_rc(manager, record, model=None):
     host = shlex.quote(record['host'])
     model_value = shlex.quote(model if isinstance(model, str) else '')
     python = shlex.quote(sys.executable)
+    binding = shlex.quote(json.dumps({'uid': os.getuid(), 'host': record['host'],
+                                      'server': record['id'], 'config': str(manager.config_path)}))
     return '\n'.join([
         '# Generated SSH session setup. Source only on the selected compute node.',
         'if [[ -f ~/.bashrc ]]; then source ~/.bashrc; fi',
@@ -24,6 +27,8 @@ def session_rc(manager, record, model=None):
         # /tmp is explicitly node-local; do not inherit a shared TMPDIR.
         'NERSC_CODEX_SESSION_DIR=$(mktemp -d /tmp/nersc-codex.XXXXXXXXXX) || return 1',
         'mkdir -m 700 "$NERSC_CODEX_SESSION_DIR/sqlite" "$NERSC_CODEX_SESSION_DIR/tmp" || return 1',
+        "(umask 077; printf '%s\\n' " + binding + ' > "$NERSC_CODEX_SESSION_DIR/session.json") || return 1',
+        'export NERSC_CODEX_SESSION_DIR',
         'function codex-local() {',
         f'  NERSC_OLLAMA_CONFIG={config} NERSC_OLLAMA_SERVER={identity} '
         'CODEX_HOME="$NERSC_CODEX_SESSION_DIR" '

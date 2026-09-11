@@ -174,3 +174,11 @@ the selected node before use. No shell startup file is modified.
 
 `nersc-ollama-tui` is an installed shortcut for `nersc-ollama tui`.
 It also accepts global options, for example `nersc-ollama-tui --config /path/to/config.json`.
+
+The SSH setup exports its session directory. The Python `codex-local` entry point
+validates the directory ownership, permissions, node, server and configuration
+before applying local Codex storage. This also works in child scripts and after
+`henv -x` activation; the interactive function is not required. If a bound session
+is missing or invalid, the launcher stops instead of falling back to shared home.
+After upgrading, open a new TUI SSH shell to receive the exported binding.
+Shell scripts should begin with `#!/usr/bin/env bash`.

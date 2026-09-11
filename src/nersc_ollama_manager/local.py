@@ -61,6 +61,8 @@ def command(args):
 
 def main():
     try:
+        from .session_state import apply_session_state
+        apply_session_state()
         args = command(sys.argv[1:])
         os.execv(args[0], args)
     except KeyboardInterrupt:
