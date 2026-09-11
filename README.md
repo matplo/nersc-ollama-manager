@@ -285,3 +285,10 @@ before applying local Codex storage. This also works in child scripts and after
 is missing or invalid, the launcher stops instead of falling back to shared home.
 After upgrading, open a new TUI SSH shell to receive the exported binding.
 Shell scripts should begin with `#!/usr/bin/env bash`.
+
+Select the **GPU** profile and toggle **Spread across GPUs** to save the GPU
+placement preference. New GPU workers set `OLLAMA_SCHED_SPREAD` from
+`profiles.gpu.sched_spread` in the manager configuration; no shell export is
+needed. Turning it off permits Ollama to use one GPU when the model fits.
+Existing servers are unchanged. Without a saved preference, the environment
+variable remains the fallback. Spreading does not guarantee faster generation.

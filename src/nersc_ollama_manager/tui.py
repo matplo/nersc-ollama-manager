@@ -6,7 +6,7 @@ import subprocess
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
 
 
 class Dashboard(App):
@@ -19,6 +19,7 @@ class Dashboard(App):
     Input { width: 1fr; }
     Button { min-width: 12; }
     RichLog { height: 1fr; }
+    #spread_label { width: auto; padding: 1 1 0 1; }
     '''
     BINDINGS = [('q', 'quit', 'Quit'), ('r', 'refresh', 'Refresh'), ('d', 'delete_expired', 'Dismiss session')]
 
@@ -63,6 +64,9 @@ class Dashboard(App):
             yield Button('Stop job', id='stop', variant='warning')
             yield Button('Dismiss session', id='delete_expired', tooltip='Hide the selected session from this dashboard; keep the job, record, logs and models')
         with Horizontal():
+            yield Static('Spread across GPUs (saved for new GPU servers)', id='spread_label')
+            yield Switch(value=self.manager.gpu_spread(), id='gpu_spread', disabled=True)
+        with Horizontal():
             yield Select([], prompt='Downloaded model (shared storage)', id='models')
             yield Button('Models', id='load_models')
             yield Button('Codex', id='codex', variant='primary')
@@ -87,6 +91,18 @@ class Dashboard(App):
     def on_select_changed(self, event: Select.Changed):
         if event.select.id == 'profile' and isinstance(event.value, str):
             self.query_one('#walltime', Input).value = self.manager.config['profiles'][event.value]['time']
+            self.query_one('#gpu_spread', Switch).disabled = event.value != 'gpu'
+
+    async def on_switch_changed(self, event: Switch.Changed):
+        if event.switch.id != 'gpu_spread':
+            return
+        try:
+            await asyncio.to_thread(self.manager.set_gpu_spread, event.value)
+            self.query_one(RichLog).write('GPU spreading saved: ' + ('on' if event.value else 'off') + '. Applies to newly started GPU servers; running jobs are unchanged.')
+        except Exception as exc:
+            with self.prevent(Switch.Changed):
+                event.switch.value = self.manager.gpu_spread()
+            self.query_one(RichLog).write(f'Cannot save GPU spreading: {exc}')
 
     async def action_refresh(self):
         if self.busy:

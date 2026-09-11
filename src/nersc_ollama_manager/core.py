@@ -190,6 +190,22 @@ class Manager:
             return cls.initialize(path)
         return cls(path)
 
+    def gpu_spread(self):
+        value = self.config['profiles']['gpu'].get('sched_spread')
+        if value is None:
+            return os.environ.get('OLLAMA_SCHED_SPREAD', '').lower() in ('1', 'true', 'yes', 'on')
+        if not isinstance(value, bool):
+            raise ValueError('GPU sched_spread must be true or false.')
+        return value
+
+    def set_gpu_spread(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('GPU sched_spread must be true or false.')
+        config = read_json(self.config_path)
+        config['profiles']['gpu']['sched_spread'] = enabled
+        atomic_json(self.config_path, config)
+        self.config = config
+
     def startup_timeout(self, profile):
         value = self.config['profiles'][profile].get('startup_timeout', self.config.get('startup_timeout', 300))
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 86400:
@@ -455,6 +471,7 @@ class Manager:
         env = os.environ.copy()
         env.update(OLLAMA_MODELS=str(self.root / 'models'), OLLAMA_HOST=f'127.0.0.1:{port}',
                    OLLAMA_CONTEXT_LENGTH=str(self.config['profiles'][profile]['context']))
+        env['OLLAMA_SCHED_SPREAD'] = str(profile == 'gpu' and self.gpu_spread()).lower()
         if profile == 'cpu':
             env['CUDA_VISIBLE_DEVICES'] = '-1'
         stopped = False
