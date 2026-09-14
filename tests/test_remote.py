@@ -204,6 +204,14 @@ class RemoteManagerTests(unittest.TestCase):
         self.assertEqual(len(proxy_opts), 1)
         self.assertIn('saul.nersc.gov', proxy_opts[0])
         self.assertIn('-W', proxy_opts[0])
+        # The compute node's host key can't be pre-trusted by an external
+        # client (nid* keys aren't publicly distributed) -- trust it on
+        # first use, scoped to a private known_hosts file, not the user's
+        # real ~/.ssh/known_hosts.
+        self.assertIn('StrictHostKeyChecking=accept-new', args)
+        known_hosts_opts = [a for a in args if isinstance(a, str) and a.startswith('UserKnownHostsFile=')]
+        self.assertEqual(len(known_hosts_opts), 1)
+        self.assertEqual(known_hosts_opts[0], f'UserKnownHostsFile={control.parent / "known_hosts"}')
 
     def test_ensure_tunnel_local_has_no_proxycommand(self):
         control, meta = Path(self.tmp.name) / 'sock', Path(self.tmp.name) / 'meta.json'
@@ -215,6 +223,10 @@ class RemoteManagerTests(unittest.TestCase):
             self.m.ensure_tunnel(self.record)
         args = run_mock.call_args[0][0]
         self.assertFalse(any(isinstance(a, str) and a.startswith('ProxyCommand=') for a in args))
+        # Local/classic mode relies on NERSC's own login-node known_hosts;
+        # no reason to relax host-key checking there.
+        self.assertNotIn('StrictHostKeyChecking=accept-new', args)
+        self.assertFalse(any(isinstance(a, str) and a.startswith('UserKnownHostsFile=') for a in args))
 
     # -- _remote_run() error translation ------------------------------------
 

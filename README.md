@@ -159,6 +159,14 @@ nersc-ollama --remote tunnel --server gpu
 nersc-ollama --remote codex --server gpu --model YOUR_MODEL_TAG
 ```
 
+`tunnel`/`codex` open a tunnel straight to the compute node through the login node
+(a `ProxyCommand` hop). Its host key is trusted on first use rather than requiring
+it pre-verified — compute node keys aren't publicly distributed, and it's only ever
+reached via that already-authenticated login-node hop — scoped to a private
+known_hosts file next to the tunnel's control socket, not `~/.ssh/known_hosts`
+(`nid*` hostnames get reused across different physical nodes over time, so a
+shared, permanent known_hosts would risk masking a genuine later key change).
+
 Codex itself is a plain local process once launched — to keep it running if you close
 your terminal, wrap it in your own `screen`/`tmux` session; no special support is
 needed: `screen -S mine nersc-ollama --remote codex --server gpu --model YOUR_MODEL_TAG`.

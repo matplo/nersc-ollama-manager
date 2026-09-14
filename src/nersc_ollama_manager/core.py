@@ -869,6 +869,19 @@ class Manager:
                 # opens directly to the compute node, just via a ProxyCommand
                 # instead of assuming it's already reachable.
                 args += self._remote_identity_args() + self._compute_proxy_option()
+                # The login node's own host key (inside the ProxyCommand above)
+                # is still verified normally. But an external client has no
+                # legitimate way to have pre-trusted this specific compute
+                # node's key -- nid* host keys aren't publicly distributed, and
+                # a fresh client's known_hosts has never seen one. The compute
+                # node is only ever reached via that already-authenticated
+                # login-node hop, so trust it on first use here instead,
+                # scoped to a private known_hosts file (not ~/.ssh/known_hosts,
+                # since nid* hostnames get reused across different physical
+                # nodes over time) so a genuine later key change still fails
+                # loudly rather than being silently re-accepted every time.
+                args += ['-o', 'StrictHostKeyChecking=accept-new',
+                         '-o', f'UserKnownHostsFile={control.parent / "known_hosts"}']
             args += ['-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
                      '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
                      '-L', f'127.0.0.1:{port}:127.0.0.1:{record["port"]}', record['host']]
