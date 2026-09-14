@@ -7,19 +7,60 @@ picking from what's already there. Every step is skippable via a flag, so it
 degrades to a fully non-interactive one-liner for scripted use.
 """
 import argparse
+import shlex
 import subprocess
 import sys
 
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 
 from .core import Manager, request
 from ._prompts import pick, pick_server
 from . import __version__
 
-APPROVAL_PRESETS = [
-    ('Full auto (sandboxed, auto-approve)', ['--full-auto']),
-    ('Default (Codex asks before acting)', []),
-    ('Bypass approvals and sandbox entirely', ['--dangerously-bypass-approvals-and-sandbox']),
+# Real, verified values straight from `codex --help` -- an earlier revision
+# of this file guessed at a bundled `--full-auto` flag that turned out not to
+# exist in current Codex CLI at all. No attempt here to guess which
+# combination of these "honestly works" together; each is independent and
+# defaults to unset (Codex's own config decides) so nothing is ever pinned
+# unless explicitly chosen.
+UNSET = "(unset -- use Codex's own default)"
+SANDBOX_MODES = [UNSET, 'read-only', 'workspace-write', 'danger-full-access']
+APPROVAL_POLICIES = [UNSET, 'on-request', 'never']
+
+
+def _configure_approval(console):
+    # --approve-for-me and --sandbox are mutually exclusive -- confirmed by
+    # Codex's own parser ("the argument '--sandbox <SANDBOX_MODE>' cannot be
+    # used with '--approve-for-me'"), not assumed. --approve-for-me's own
+    # --help text ("...using the workspace-write sandbox") suggests it's a
+    # self-contained shorthand rather than a modifier meant to stack with
+    # manual -s/-a choices, so asking it first and returning immediately
+    # avoids ever reproducing that confirmed-broken combination.
+    if Confirm.ask('Auto-approve for me (--approve-for-me)? Uses its own sandbox internally; '
+                    "skips the manual -s/-a choices below if yes.", default=False):
+        return ['--approve-for-me']
+    extra = []
+    sandbox = pick(console, SANDBOX_MODES, 'Sandbox (-s)', lambda s: s, default_index=0)
+    if sandbox != UNSET:
+        extra += ['--sandbox', sandbox]
+    policy = pick(console, APPROVAL_POLICIES, 'Ask for approval (-a)', lambda s: s, default_index=0)
+    if policy != UNSET:
+        extra += ['--ask-for-approval', policy]
+    return extra
+
+
+def _custom_args(console):
+    return shlex.split(Prompt.ask('Codex arguments'))
+
+
+# (label, resolver(console) -> extra args). 'Codex's own defaults' is first/
+# the default on purpose: no flags at all, so it can never be wrong.
+APPROVAL_CHOICES = [
+    ("Codex's own defaults (no extra flags)", lambda console: []),
+    ('Configure approval (-s / -a / --approve-for-me, independently)', _configure_approval),
+    ('Bypass approvals and sandbox entirely (dangerous)', lambda console: ['--dangerously-bypass-approvals-and-sandbox']),
+    ('Custom (type your own Codex arguments)', _custom_args),
 ]
 
 
@@ -64,6 +105,11 @@ def main(argv=None):
 
         context = args.context
         if context is None:
+            # Refresh: record['heartbeat'] is a point-in-time snapshot from
+            # pick_server() above, and validate_record() rejects one older
+            # than 90s -- time spent choosing a model can plausibly exceed
+            # that on its own.
+            record = manager.select(record['id'])
             info = request(manager.ensure_tunnel(record), '/api/show', {'model': model})
             model_info = info.get('model_info', {})
             maximum = model_info.get(model_info.get('general.architecture', '') + '.context_length')
@@ -75,8 +121,14 @@ def main(argv=None):
         if extra[:1] == ['--']:
             extra = extra[1:]
         if not extra:
-            _, extra = pick(console, APPROVAL_PRESETS, 'Approval mode', lambda preset: preset[0])
+            _, resolve = pick(console, APPROVAL_CHOICES, 'Approval mode', lambda choice: choice[0])
+            extra = resolve(console)
 
+        # Refresh again: the approval-mode menu (and any Confirm/Prompt
+        # follow-ups) is exactly the kind of open-ended wait that can push
+        # the very first snapshot's heartbeat past 90s, well after the
+        # server itself is still fine.
+        record = manager.select(record['id'])
         command = manager.codex_command(record, model, extra, context=context)
         console.print('Launching: ' + ' '.join(command))
         return subprocess.call(command)

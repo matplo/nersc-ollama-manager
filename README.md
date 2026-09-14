@@ -360,11 +360,31 @@ Ollama's own reload fails at generation time, not at `codex` launch.
 `nersc-ollama-codex` wraps `status`/`models`/`codex` into one interactive picker —
 accepting the same `--config`/`--remote`/`--remote-host` flags, it prompts for
 whichever of server, model, or context you don't pass (defaulting context to the
-model's own maximum, auto-picking when only one server or model exists, and
-offering a quick approval-mode choice — full-auto, default, or bypass entirely —
-when no Codex arguments follow `--`), then launches Codex exactly as `codex` above
-would. Fully non-interactive when `--server`/`--model` and a `--` are all given,
-for scripted use.
+model's own maximum, auto-picking when only one server or model exists), then
+launches Codex exactly as `codex` above would. Fully non-interactive when
+`--server`/`--model` and a `--` are all given, for scripted use. Re-fetches the
+server record before actually using it (for the context lookup and again right
+before launching Codex): the record's heartbeat is a snapshot from when it was
+first picked, valid for only 90 seconds, and real time spent choosing a model
+or an approval mode can plausibly exceed that even though the server itself is
+fine the whole time.
+
+When no Codex arguments follow `--`, it also offers an approval-mode choice:
+**Codex's own defaults** (no extra flags, the default choice since it can never
+be wrong), **Configure approval** — first asks about `--approve-for-me`
+(routes approvals through automatic review using its own internal sandbox);
+saying no instead prompts for `-s`/`--sandbox`
+[`read-only`/`workspace-write`/`danger-full-access`] and `-a`/`--ask-for-approval`
+[`on-request`/`never`] independently, each left unset unless you explicitly
+choose a value. `--approve-for-me` and `--sandbox` are asked about this way
+because they're mutually exclusive — confirmed by Codex's own parser, not
+assumed — so choosing `--approve-for-me` skips the manual prompts entirely
+rather than ever risking that combination; verify further combinations
+against your own `codex --help`, since exact flags/values have shifted across
+Codex versions before. **Bypass approvals and sandbox entirely**
+(`--dangerously-bypass-approvals-and-sandbox`, Codex's own words: "EXTREMELY
+DANGEROUS") and **Custom** (type any Codex
+arguments directly.
 
 `nersc-ollama-ssh2server` is the same server picker, but drops you into a plain
 interactive shell on the compute node instead of launching Codex — same

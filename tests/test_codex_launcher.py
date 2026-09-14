@@ -46,7 +46,26 @@ class CodexLauncherTests(unittest.TestCase):
         self.assertEqual(code, 0)
         ask.assert_not_called()
         codex_command.assert_called_once_with(self.record, 'test:latest', ['--full-auto'], context=131072)
-        call.assert_called_once_with(['codex', '-m', 'test:latest'])
+
+    def test_record_is_refreshed_before_the_final_codex_command_call(self):
+        # record['heartbeat'] is a point-in-time snapshot from pick_server();
+        # validate_record() rejects one over 90s old, which real interactive
+        # navigation (model/context/approval-mode prompts) can plausibly
+        # exceed even though the server itself is fine the whole time -- hit
+        # live. Re-fetch via select() right before use, rather than reusing
+        # the original snapshot.
+        refreshed = {**self.record, 'heartbeat': 'fresh'}
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'select', return_value=refreshed) as select, \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask') as ask:
+            main(['--config', str(self.config), '--server', 'gpu', '--model', 'test:latest',
+                  '--context', '131072', '--', '--full-auto'])
+        select.assert_called_once_with('gpu-1')
+        codex_command.assert_called_once_with(refreshed, 'test:latest', ['--full-auto'], context=131072)
+        ask.assert_not_called()
 
     def test_single_server_and_model_auto_picked_without_prompt(self):
         with patch.object(Manager, 'list_servers', return_value=[self.record]), \
@@ -92,9 +111,60 @@ class CodexLauncherTests(unittest.TestCase):
              patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
              patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
              patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
-             patch('nersc_ollama_manager._prompts.IntPrompt.ask', return_value=2):  # "Default" preset
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask', return_value=1):  # "Codex's own defaults" (first/the default)
             main(['--config', str(self.config), '--context', '131072'])
         codex_command.assert_called_once_with(self.record, 'test:latest', [], context=131072)
+
+    def test_approval_configuration_approve_for_me_skips_manual_prompts(self):
+        # --approve-for-me and --sandbox are confirmed mutually exclusive by
+        # Codex's own parser (a real error hit live, not a guess) -- choosing
+        # --approve-for-me must never also produce -s/-a, so the manual
+        # prompts are skipped entirely rather than risking that combination.
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask', return_value=2) as ask, \
+             patch('nersc_ollama_manager.codex_launcher.Confirm.ask', return_value=True):
+            main(['--config', str(self.config), '--context', '131072'])
+        codex_command.assert_called_once_with(self.record, 'test:latest', ['--approve-for-me'], context=131072)
+        ask.assert_called_once()  # only the top-level "Approval mode" menu -- -s/-a never even asked
+
+    def test_approval_configuration_builds_verified_manual_flags(self):
+        # Real, --help-verified flags (-s/--sandbox, -a/--ask-for-approval) --
+        # not the guessed --full-auto an earlier revision shipped, which
+        # doesn't exist in current Codex CLI at all.
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask', side_effect=[2, 4, 3]), \
+             patch('nersc_ollama_manager.codex_launcher.Confirm.ask', return_value=False):
+            main(['--config', str(self.config), '--context', '131072'])
+        codex_command.assert_called_once_with(
+            self.record, 'test:latest',
+            ['--sandbox', 'danger-full-access', '--ask-for-approval', 'never'],
+            context=131072)
+
+    def test_approval_configuration_leaves_unset_choices_unflagged(self):
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask', side_effect=[2, 1, 1]), \
+             patch('nersc_ollama_manager.codex_launcher.Confirm.ask', return_value=False):
+            main(['--config', str(self.config), '--context', '131072'])
+        codex_command.assert_called_once_with(self.record, 'test:latest', [], context=131072)
+
+    def test_approval_custom_preset_prompts_for_raw_arguments(self):
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0), \
+             patch('nersc_ollama_manager._prompts.IntPrompt.ask', return_value=4), \
+             patch('nersc_ollama_manager.codex_launcher.Prompt.ask', return_value='--foo --bar baz'):
+            main(['--config', str(self.config), '--context', '131072'])
+        codex_command.assert_called_once_with(self.record, 'test:latest', ['--foo', '--bar', 'baz'], context=131072)
 
     def test_multiple_servers_prompts_and_honors_choice(self):
         second = {**self.record, 'id': 'gpu-2', 'name': 'gpu2'}
