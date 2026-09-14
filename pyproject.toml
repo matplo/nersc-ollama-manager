@@ -20,6 +20,8 @@ tui = ["textual>=8"]
 [project.scripts]
 nersc-ollama = "nersc_ollama_manager.cli:main"
 nersc-ollama-tui = "nersc_ollama_manager.cli:tui_main"
+nersc-ollama-codex = "nersc_ollama_manager.codex_launcher:main"
+nersc-ollama-ssh2server = "nersc_ollama_manager.ssh_launcher:main"
 codex-local = "nersc_ollama_manager.local:main"
 
 [tool.setuptools.packages.find]

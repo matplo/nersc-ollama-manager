@@ -629,5 +629,41 @@ class OllamaBinaryOverrideTests(unittest.TestCase):
         self.assertIn('--ollama-binary /opt/shared/ollama', run_mock.call_args[0][0][-1])
 
 
+class SshShellCommandTests(unittest.TestCase):
+    """ssh_shell_command(): a plain interactive shell on a live server's
+    compute node, for nersc-ollama-ssh2server. Not ssh_session.py's
+    codex-local-enabling setup, which needs a filesystem shared with the
+    compute node -- not true of the client's own local runtime under --remote."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.m = Manager.initialize(root / 'config.json', root / 'runtime', root / 'ollama')
+        self.record = dict(schema_version=1, id='test-123-abcdef', name='test', uid=os.getuid(),
+                            job_id='123', host='nid000001', port=23456, state='ready', heartbeat=time.time())
+
+    def test_local_is_a_plain_ssh_with_no_proxy_or_relaxed_host_key(self):
+        with patch.object(self.m, 'validate_record'):
+            command = self.m.ssh_shell_command(self.record)
+        self.assertEqual(command[0], 'ssh')
+        self.assertIn('-tt', command)
+        self.assertEqual(command[-1], 'nid000001')
+        self.assertFalse(any(isinstance(a, str) and a.startswith('ProxyCommand=') for a in command))
+        self.assertNotIn('StrictHostKeyChecking=accept-new', command)
+
+    def test_remote_adds_identity_proxy_and_relaxed_host_key(self):
+        self.m.remote = 'saul.nersc.gov'
+        with patch.object(self.m, 'validate_record'):
+            command = self.m.ssh_shell_command(self.record)
+        self.assertEqual(command[0], 'ssh')
+        self.assertIn('-i', command)
+        proxy_opts = [a for a in command if isinstance(a, str) and a.startswith('ProxyCommand=')]
+        self.assertEqual(len(proxy_opts), 1)
+        self.assertIn('saul.nersc.gov', proxy_opts[0])
+        self.assertIn('StrictHostKeyChecking=accept-new', command)
+        self.assertEqual(command[-1], 'nid000001')
+
+
 if __name__ == '__main__':
     unittest.main()

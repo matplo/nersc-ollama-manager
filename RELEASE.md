@@ -1,7 +1,8 @@
 # Publishing releases
 
-The package ships three entry points: `nersc-ollama`, `nersc-ollama-tui`, and
-`codex-local`. Install the dashboard with `pip install 'nersc-ollama-manager[tui]'`.
+The package ships five entry points: `nersc-ollama`, `nersc-ollama-tui`,
+`nersc-ollama-codex`, `nersc-ollama-ssh2server`, and `codex-local`. Install the
+dashboard with `pip install 'nersc-ollama-manager[tui]'`.
 
 ## One-time setup
 

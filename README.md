@@ -357,6 +357,25 @@ default) is leaving GPU memory unused for a model whose own maximum is larger.
 Nothing is persisted or sent ahead of time; if the requested context doesn't fit,
 Ollama's own reload fails at generation time, not at `codex` launch.
 
+`nersc-ollama-codex` wraps `status`/`models`/`codex` into one interactive picker —
+accepting the same `--config`/`--remote`/`--remote-host` flags, it prompts for
+whichever of server, model, or context you don't pass (defaulting context to the
+model's own maximum, auto-picking when only one server or model exists, and
+offering a quick approval-mode choice — full-auto, default, or bypass entirely —
+when no Codex arguments follow `--`), then launches Codex exactly as `codex` above
+would. Fully non-interactive when `--server`/`--model` and a `--` are all given,
+for scripted use.
+
+`nersc-ollama-ssh2server` is the same server picker, but drops you into a plain
+interactive shell on the compute node instead of launching Codex — same
+`--config`/`--remote`/`--remote-host`/`--server` flags, same auto-pick-if-only-one
+behavior. It's deliberately not the TUI's **SSH** button's `codex-local`-enabling
+session setup (`ssh_session.py`): that writes its rc file under the shared runtime
+directory, which only works in classic/on-NERSC mode — under `--remote`, `runtime`
+is the client's own local directory, invisible to the compute node entirely. This
+just execs `ssh` directly (reusing the same identity/`ProxyCommand`/host-key
+handling as `tunnel`/`codex`), so it works the same way local or `--remote`.
+
 Catalogs are named by content hash to avoid conflicts between simultaneous
 sessions. Global Codex settings are not rewritten. Restart Codex through the
 manager to pick up the generated catalog; an existing Codex session is unaffected.

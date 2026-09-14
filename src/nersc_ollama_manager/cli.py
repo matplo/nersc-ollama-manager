@@ -119,12 +119,7 @@ def main(argv=None):
             print(f'Configuration: {manager.config_path}')
             return 0
         manager = Manager.open(args.config)
-        if args.remote:
-            manager.remote = args.remote_host or manager.config.get('remote_login_host')
-            if not manager.remote:
-                raise RuntimeError('Pass --remote-host HOST, or set remote_login_host in the configuration.')
-        elif args.remote_host:
-            raise RuntimeError('--remote-host requires --remote.')
+        manager.resolve_remote(args.remote, args.remote_host)
         if args.command == 'setup':  # only reachable here when args.remote is set
             manager.setup_remote(args.runtime, args.root, args.version, args.ollama_binary)
         elif args.command == 'doctor':

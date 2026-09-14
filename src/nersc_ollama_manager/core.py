@@ -241,6 +241,16 @@ class Manager:
             argv += ['--config', self.config['remote_config']]
         return argv + list(subcommand_args)
 
+    def resolve_remote(self, remote, remote_host=None):
+        """Shared --remote/--remote-host resolution, used by both nersc-ollama
+        and nersc-ollama-codex so the two entry points behave identically."""
+        if remote:
+            self.remote = remote_host or self.config.get('remote_login_host')
+            if not self.remote:
+                raise RuntimeError('Pass --remote-host HOST, or set remote_login_host in the configuration.')
+        elif remote_host:
+            raise RuntimeError('--remote-host requires --remote.')
+
     def _remote_run(self, argv, **kwargs):
         """Run argv on the login node over SSH, translating common failure
         modes (auth, missing remote command) into actionable errors."""
@@ -893,6 +903,25 @@ class Manager:
                 self._disconnect(record, control, meta)
                 raise
             return port
+
+    def ssh_shell_command(self, record):
+        """Argv for a plain interactive shell on a live server's compute node
+        (for nersc-ollama-ssh2server). Not ssh_session.py's codex-local-enabling
+        setup: that writes its rc file under self.runtime, which is only shared
+        with the compute node in classic/on-NERSC mode -- under --remote,
+        self.runtime is the client's own local directory, invisible from NERSC
+        entirely. Reuses ensure_tunnel()'s identity/ProxyCommand/host-key
+        handling instead, just without the -L port forward."""
+        self.validate_record(record)
+        control, _ = self.tunnel_paths(record)
+        args = ['ssh', '-tt']
+        if self.remote:
+            args += self._remote_identity_args() + self._compute_proxy_option()
+            args += ['-o', 'StrictHostKeyChecking=accept-new',
+                     '-o', f'UserKnownHostsFile={control.parent / "known_hosts"}']
+        args += ['-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+                 record['host']]
+        return args
 
     @contextlib.contextmanager
     def tunnel_lock(self, meta):

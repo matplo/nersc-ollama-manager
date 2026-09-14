@@ -192,6 +192,24 @@ nersc-ollama --remote status                              # see the gpu server f
 nersc-ollama --remote codex --server gpu --model MODEL_TAG
 ```
 
+Or skip picking `--server`/`--model`/`--context`/approval mode by hand each time —
+`nersc-ollama-codex` (accepts the same `--config`/`--remote`/`--remote-host` flags)
+prompts for whichever of those you don't pass, defaulting the context to the
+model's own maximum and auto-picking when there's only one server or model:
+
+```sh
+nersc-ollama-codex --remote
+# or fully non-interactive, e.g. from a script:
+nersc-ollama-codex --remote --server gpu --model MODEL_TAG --context 131072 -- --full-auto
+```
+
+Or, for a plain shell on the compute node instead of Codex — same server picker,
+same flags:
+
+```sh
+nersc-ollama-ssh2server --remote
+```
+
 Codex now runs **locally**, editing files in your current directory, while only
 Ollama inference is tunneled to the compute node started in step 1. Quitting Codex
 leaves the NERSC allocation running; end it deliberately when you're done with
