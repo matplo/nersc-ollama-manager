@@ -105,11 +105,6 @@ def main(argv=None):
 
         context = args.context
         if context is None:
-            # Refresh: record['heartbeat'] is a point-in-time snapshot from
-            # pick_server() above, and validate_record() rejects one older
-            # than 90s -- time spent choosing a model can plausibly exceed
-            # that on its own.
-            record = manager.select(record['id'])
             info = request(manager.ensure_tunnel(record), '/api/show', {'model': model})
             model_info = info.get('model_info', {})
             maximum = model_info.get(model_info.get('general.architecture', '') + '.context_length')
@@ -124,11 +119,20 @@ def main(argv=None):
             _, resolve = pick(console, APPROVAL_CHOICES, 'Approval mode', lambda choice: choice[0])
             extra = resolve(console)
 
-        # Refresh again: the approval-mode menu (and any Confirm/Prompt
-        # follow-ups) is exactly the kind of open-ended wait that can push
-        # the very first snapshot's heartbeat past 90s, well after the
-        # server itself is still fine.
-        record = manager.select(record['id'])
+        # Best-effort refresh: the approval-mode menu (and any Confirm/Prompt
+        # follow-ups) is exactly the kind of open-ended wait that can push the
+        # original snapshot's heartbeat past validate_record()'s 90s window,
+        # well after the server itself is still fine -- hit live. But a fresh
+        # select() is itself one more remote round-trip that can transiently
+        # hiccup (hit live too, immediately after this was first added), so a
+        # failure here must never be fatal on its own: fall back to the
+        # record already in hand rather than a refresh attempt becoming a new
+        # single point of failure. If it's genuinely gone, codex_command()'s
+        # own validate_record() call below still reports that clearly.
+        try:
+            record = manager.select(record['id'])
+        except (RuntimeError, KeyError, ValueError, OSError):
+            pass
         command = manager.codex_command(record, model, extra, context=context)
         console.print('Launching: ' + ' '.join(command))
         return subprocess.call(command)

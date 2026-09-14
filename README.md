@@ -362,12 +362,15 @@ accepting the same `--config`/`--remote`/`--remote-host` flags, it prompts for
 whichever of server, model, or context you don't pass (defaulting context to the
 model's own maximum, auto-picking when only one server or model exists), then
 launches Codex exactly as `codex` above would. Fully non-interactive when
-`--server`/`--model` and a `--` are all given, for scripted use. Re-fetches the
-server record before actually using it (for the context lookup and again right
-before launching Codex): the record's heartbeat is a snapshot from when it was
-first picked, valid for only 90 seconds, and real time spent choosing a model
-or an approval mode can plausibly exceed that even though the server itself is
-fine the whole time.
+`--server`/`--model` and a `--` are all given, for scripted use. Makes a
+best-effort re-fetch of the server record right before launching Codex: the
+originally picked record's heartbeat is a snapshot valid for only 90 seconds,
+and real time spent choosing a model or an approval mode can plausibly exceed
+that even though the server itself is fine the whole time. That re-fetch is
+itself one more remote round-trip, so a failure there falls back to the
+record already in hand rather than becoming a new failure of its own —
+`codex_command()`'s own validation still reports clearly if the server is
+genuinely gone by then.
 
 When no Codex arguments follow `--`, it also offers an approval-mode choice:
 **Codex's own defaults** (no extra flags, the default choice since it can never

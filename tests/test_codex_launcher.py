@@ -67,6 +67,22 @@ class CodexLauncherTests(unittest.TestCase):
         codex_command.assert_called_once_with(refreshed, 'test:latest', ['--full-auto'], context=131072)
         ask.assert_not_called()
 
+    def test_refresh_failure_falls_back_to_the_record_already_in_hand(self):
+        # Hit live immediately after the refresh above was first added: the
+        # refresh is itself one more remote round-trip that can transiently
+        # fail, and that must never crash a session where the server was
+        # otherwise perfectly fine -- fall back rather than propagate.
+        with patch.object(Manager, 'list_servers', return_value=[self.record]), \
+             patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
+             patch.object(Manager, 'select', side_effect=RuntimeError('Select exactly one live server ...')), \
+             patch.object(Manager, 'codex_command', return_value=['codex']) as codex_command, \
+             patch('nersc_ollama_manager.codex_launcher.subprocess.call', return_value=0) as call:
+            code = main(['--config', str(self.config), '--server', 'gpu', '--model', 'test:latest',
+                         '--context', '131072', '--', '--full-auto'])
+        self.assertEqual(code, 0)
+        codex_command.assert_called_once_with(self.record, 'test:latest', ['--full-auto'], context=131072)
+        call.assert_called_once_with(['codex'])
+
     def test_single_server_and_model_auto_picked_without_prompt(self):
         with patch.object(Manager, 'list_servers', return_value=[self.record]), \
              patch.object(Manager, 'models', return_value=[{'name': 'test:latest'}]), \
