@@ -72,12 +72,31 @@ class Dashboard(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id='onboarding'):
-            yield Static('First-time setup: review storage, then explicitly install an Ollama release. No models or jobs are started.')
-            yield Input(value=str(self.manager.runtime), placeholder='Absolute runtime directory', id='runtime_path')
-            yield Input(value=str(self.manager.root), placeholder='Absolute Ollama storage directory', id='root_path')
+            yield Static('First-time setup: choose two storage paths below, then install a pinned Ollama '
+                         'release. Nothing is downloaded, no server starts, and no Slurm job runs yet.')
+            yield Input(value=str(self.manager.runtime), placeholder='Runtime directory (discovery records, logs)',
+                        id='runtime_path',
+                        tooltip="Manager bookkeeping only: discovery records, per-server logs, generated "
+                                "Codex model catalogs. Written by the compute node's serve process and read "
+                                "from the login node -- use a path both can see (e.g. under $CFS), not $HOME.")
+            yield Input(value=str(self.manager.root), placeholder='Ollama storage directory (binary + models)',
+                        id='root_path',
+                        tooltip='Holds the installed Ollama binary release and every downloaded model '
+                                '(multi-GB to tens of GB each). Use a large shared path (e.g. under $CFS '
+                                'or $SCRATCH) -- NERSC home directories are too small and are not the '
+                                'point of this field.')
+            yield Input(value=self.manager.config.get('ollama_binary') or '',
+                        placeholder='Existing Ollama binary (optional; e.g. a NERSC module)',
+                        id='ollama_binary_path',
+                        tooltip='Use an Ollama that already exists on NERSC some other way instead of the '
+                                'pinned install below -- an absolute path to an existing ollama executable. '
+                                'Leave blank to manage a pinned release here instead.')
             with Horizontal():
                 yield Button('Save storage', id='save_storage')
-                yield Input(placeholder='Ollama release version, e.g. 0.34.0', id='release')
+                yield Input(placeholder='Ollama release version, e.g. 0.34.0', id='release',
+                            tooltip='An exact release tag from github.com/ollama/ollama/releases. Downloads '
+                                    'and verifies that one release only; still starts no server. Not used '
+                                    'if an existing Ollama binary is set above.')
                 yield Button('Install Ollama', id='install', variant='primary')
         yield Static('Browse downloads without an allocation. For Codex, highlight a live server row and choose a model. Allocate holds this terminal.')
         yield DataTable(id='servers', cursor_type='row')
@@ -247,6 +266,9 @@ class Dashboard(App):
                 runtime = self.query_one('#runtime_path', Input).value
                 root = self.query_one('#root_path', Input).value
                 await asyncio.to_thread(self.manager.set_storage, runtime, root)
+                ollama_binary = self.query_one('#ollama_binary_path', Input).value.strip()
+                if ollama_binary:
+                    await asyncio.to_thread(self.manager.set_ollama_binary, ollama_binary)
                 if action == 'install':
                     version = self.query_one('#release', Input).value.strip()
                     if not version:
@@ -256,7 +278,10 @@ class Dashboard(App):
                     self.query_one('#onboarding').display = False
                     output.write('Ollama installed. Select a profile to request an allocation.')
                 else:
-                    output.write('Storage saved. No download or allocation started.')
+                    output.write(f'Storage saved; using existing Ollama binary: {ollama_binary}' if ollama_binary
+                                 else 'Storage saved. No download or allocation started.')
+                    if self.manager.binary.is_file():
+                        self.query_one('#onboarding').display = False
                 return
             if action in ('allocate', 'download'):
                 profile = self.query_one('#profile', Select).value

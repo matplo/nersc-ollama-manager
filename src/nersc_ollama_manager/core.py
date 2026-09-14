@@ -154,6 +154,9 @@ class Manager:
         for key in ('runtime', 'ollama_root'):
             if not isinstance(self.config.get(key), str) or not Path(self.config[key]).is_absolute():
                 raise ValueError(f'Configuration {key} must be an absolute path.')
+        if self.config.get('ollama_binary') is not None:
+            if not isinstance(self.config['ollama_binary'], str) or not Path(self.config['ollama_binary']).is_absolute():
+                raise ValueError('Configuration ollama_binary must be an absolute path.')
         profiles = self.config.get('profiles')
         if not isinstance(profiles, dict) or not all(isinstance(profiles.get(k), dict) for k in ('cpu', 'gpu')):
             raise ValueError('Configuration must define CPU and GPU profiles.')
@@ -164,7 +167,12 @@ class Manager:
         self.root = Path(self.config['ollama_root']).absolute()
         self.records = self.runtime / 'servers'
         self.logs = self.runtime / 'logs'
-        self.binary = self.root / 'current/bin/ollama'
+        # ollama_binary opts out of this tool's own pinned-release install/symlink
+        # management entirely, in favor of an Ollama that already exists on NERSC
+        # some other way (a module, a shared install, ...).
+        self.binary = (Path(self.config['ollama_binary']).absolute() if self.config.get('ollama_binary')
+                        else self.root / 'current/bin/ollama')
+        self.remote = None  # resolved login-node host when running with --remote
 
     @classmethod
     def initialize(cls, config, runtime=None, root=None):
@@ -195,6 +203,61 @@ class Manager:
                 raise RuntimeError(f'Configuration does not exist: {path}. Run nersc-ollama --config {shlex.quote(str(path))} setup.')
             return cls.initialize(path)
         return cls(path)
+
+    # --- --remote support: run client-side subcommands from outside NERSC ---
+    # over SSH to a login node, using explicit sshproxy-key identity args
+    # (rather than requiring a pre-existing ~/.ssh/config ProxyJump).
+    #
+    # Think in terms of two roles, not two machines: the NERSC server side
+    # (Slurm, the compute node, Ollama itself -- always on NERSC) and the
+    # Codex client side (wherever this process is actually running -- a
+    # login node, some other node, or a laptop). self.remote/--remote is
+    # just "does the client side need an SSH hop to reach the server side,
+    # or is it already sitting there" -- not a statement about which
+    # machine does the real work (the server side always does).
+
+    def _remote_identity_args(self):
+        import getpass
+        user = self.config.get('remote_user') or getpass.getuser()
+        identity = os.path.expanduser(self.config.get('remote_identity') or '~/.ssh/nersc')
+        return ['-l', user, '-i', identity, '-o', 'IdentitiesOnly=yes']
+
+    def _login_ssh_command(self, remote_argv):
+        return ['ssh', '-o', 'ConnectTimeout=10', *self._remote_identity_args(),
+                self.remote, shlex.join(str(a) for a in remote_argv)]
+
+    def _compute_proxy_option(self):
+        proxy = shlex.join(['ssh', *self._remote_identity_args(), '-W', '%h:%p', self.remote])
+        return ['-o', f'ProxyCommand={proxy}']
+
+    def _remote_cli_argv(self, *subcommand_args):
+        """Build the argv for invoking this same package's CLI on the login
+        node -- delegating a whole subcommand there, rather than
+        reimplementing it over SSH (matches _list_servers_remote's use of
+        `status --json`)."""
+        python = self.config.get('remote_python')
+        argv = [python, '-m', 'nersc_ollama_manager'] if python else ['nersc-ollama']
+        if self.config.get('remote_config'):
+            argv += ['--config', self.config['remote_config']]
+        return argv + list(subcommand_args)
+
+    def _remote_run(self, argv, **kwargs):
+        """Run argv on the login node over SSH, translating common failure
+        modes (auth, missing remote command) into actionable errors."""
+        try:
+            return run(self._login_ssh_command(argv), **kwargs)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ''
+            if exc.returncode == 255:
+                hint = ('SSH could not reach the login node; if using a sshproxy key '
+                        'it may have expired (~24h lifetime) — rerun sshproxy and try again.')
+            elif 'not found' in stderr or 'No such file' in stderr:
+                hint = ("The remote command was not found on PATH for a non-interactive SSH "
+                        "session. Set 'remote_python' in your configuration to the interpreter "
+                        "with nersc-ollama-manager installed.")
+            else:
+                hint = stderr or 'See stderr above for details.'
+            raise RuntimeError(f'Remote command on {self.remote} failed: {hint}') from exc
 
     def gpu_spread(self):
         value = self.config['profiles']['gpu'].get('sched_spread')
@@ -231,8 +294,35 @@ class Manager:
             raise RuntimeError('Allocation is still present in Slurm; only expired allocation records can be removed.')
         path.unlink()
 
+    def forget(self, identity=None, purge_all=False):
+        """CLI-facing wrapper around delete_expired(): a single ID, or a
+        best-effort sweep of every currently-unavailable record."""
+        if self.remote:
+            argv = self._remote_cli_argv('forget', *(['--all'] if purge_all else [identity]))
+            result = self._remote_run(argv, capture_output=True, text=True, timeout=25)
+            print(result.stdout, end='')
+            return
+        if purge_all:
+            removed, kept = [], []
+            for record in self.list_servers():
+                if record['available']:
+                    continue
+                try:
+                    self.delete_expired(record['id'])
+                    removed.append(record['id'])
+                except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                    kept.append((record['id'], str(exc)))
+            print(f'Removed {len(removed)} expired record(s): {", ".join(removed) or "none"}.')
+            for rid, error in kept:
+                print(f'Kept {rid}: {error}')
+            return
+        self.delete_expired(identity)
+        print(f'Removed {identity}.')
+
     def require_installation(self):
         if not self.binary.is_file():
+            if self.config.get('ollama_binary'):
+                raise RuntimeError(f'Configured ollama_binary does not exist or is not a file: {self.binary}')
             raise RuntimeError(f'Ollama is not installed. Run nersc-ollama --config {shlex.quote(str(self.config_path))} setup --version VERSION.')
 
     def set_storage(self, runtime, root):
@@ -247,14 +337,50 @@ class Manager:
         atomic_json(self.config_path, config)
         self.__init__(self.config_path)
 
+    def set_ollama_binary(self, path):
+        """Point at an Ollama that already exists on NERSC some other way
+        (a module, a shared install, ...) instead of this tool's own pinned
+        release under ollama_root/current. No restriction on when this can
+        be changed -- unlike set_storage(), it never moves or orphans files,
+        just which binary self.binary resolves to."""
+        binary = Path(path).expanduser()
+        if not binary.is_absolute():
+            raise ValueError('Choose an absolute ollama_binary path.')
+        config = {**self.config, 'ollama_binary': str(binary)}
+        atomic_json(self.config_path, config)
+        self.__init__(self.config_path)
+
     def diagnostics(self):
         return {'config': str(self.config_path), 'python': os.sys.executable,
                 'runtime': str(self.runtime), 'ollama_root': str(self.root),
+                'ollama_binary': str(self.binary), 'ollama_binary_override': self.config.get('ollama_binary'),
                 'ollama_installed': self.binary.is_file(),
                 'commands': {name: shutil.which(name) for name in
                              ('codex', 'salloc', 'srun', 'squeue', 'scancel', 'ssh', 'curl', 'zstd')}}
 
+    def setup_remote(self, runtime, root, version, ollama_binary=None):
+        """Delegate `setup` to the login node over SSH, so the NERSC side can
+        be provisioned from a client machine without a manual SSH login
+        first. This Manager's own local config is used only to resolve the
+        remote_* SSH settings -- its runtime/ollama_root are never touched."""
+        argv = self._remote_cli_argv('setup')
+        if runtime:
+            argv += ['--runtime', runtime]
+        if root:
+            argv += ['--root', root]
+        if ollama_binary:
+            argv += ['--ollama-binary', ollama_binary]
+        if version:
+            argv += ['--version', version]
+        # No capture: --version triggers a real download that can take a
+        # while, and buffering it would make this look hung until it's done.
+        run(self._login_ssh_command(argv))
+
     def install(self, version):
+        if self.config.get('ollama_binary'):
+            raise RuntimeError(f"ollama_binary is configured ({self.config['ollama_binary']}); this tool won't "
+                                "manage a separate pinned install alongside it. Remove ollama_binary from your "
+                                "configuration first if you want a self-managed install instead.")
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?', version):
             raise ValueError('Supply an explicit release version, e.g. 0.18.0.')
         arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(platform.machine())
@@ -306,7 +432,7 @@ class Manager:
             raise ValueError('Version 1 supports one node per server and a nonnegative GPU count.')
         return p
 
-    def allocation_command(self, name, profile, account=None, walltime=None):
+    def allocation_command(self, name, profile, account=None, walltime=None, spread_override=None):
         safe_name(name)
         p = self.profile(profile, account, walltime)
         args = ['salloc', '--nodes', '1', '--qos', p['qos'], '--time', p['time'],
@@ -318,28 +444,139 @@ class Manager:
         args += ['srun', '--nodes', '1', '--ntasks', '1', '--unbuffered']
         if p['gpus']:
             args += ['--gpus', str(p['gpus'])]
-            if self.gpu_spread():
+            # spread_override previews a not-yet-persisted --gpu-spread/--no-gpu-spread
+            # request (e.g. under --dry-run) without reading it back from config.
+            spread = self.gpu_spread() if spread_override is None else spread_override
+            if spread:
                 args += ['--gpu-bind', 'none']
         args += [os.sys.executable, '-m', 'nersc_ollama_manager', '--config', str(self.config_path),
                  'serve', '--name', name, '--profile', profile]
         return args
 
-    def allocate(self, name, profile, account=None, walltime=None, yes=False, dry_run=False):
+    # --- detached `screen` session on the login node, for `allocate --screen` ---
+    # A dropped SSH connection sends SIGHUP to salloc's foreground process
+    # tree, tearing down the allocation (see salloc(1)). Running it inside a
+    # detached screen session on the login node means SIGHUP never reaches
+    # it. Command shapes (start/stuff/hardcopy) follow matplo/scrn-mgr's
+    # screen_backend.py, reimplemented directly here (rather than depending
+    # on that package) so the sshproxy identity key applies automatically,
+    # with no separate ~/.ssh/config entry required.
+
+    def _screen_run(self, argv, **kwargs):
+        kwargs.setdefault('capture_output', True)
+        kwargs.setdefault('text', True)
+        kwargs.setdefault('timeout', 15)
+        runner = self._remote_run if self.remote else run
+        return runner(argv, **kwargs)
+
+    def start_screen_session(self, session, argv):
+        safe_name(session)
+        self._screen_run(['screen', '-dmS', session])
+        self.send_to_screen(session, shlex.join(str(a) for a in argv))
+
+    def send_to_screen(self, session, text):
+        if not text.endswith('\n'):
+            text += '\n'
+        self._screen_run(['screen', '-S', session, '-p', '0', '-X', 'stuff', text])
+
+    def capture_screen(self, session, lines=200):
+        """One-shot snapshot of the session's currently visible pane -- not
+        full scrollback, and not followed/tailed. Useful as a human-facing
+        peek ("is salloc still queueing?"); never load-bearing -- status and
+        logs rely on the atomic discovery record and tail_log() instead."""
+        remote_cmd = (f"t=$(mktemp); screen -S {shlex.quote(session)} -p 0 -X hardcopy \"$t\" "
+                      f'&& cat "$t" 2>/dev/null; rm -f "$t"')
+        result = self._screen_run(['sh', '-c', remote_cmd])
+        text = result.stdout
+        return '\n'.join(text.splitlines()[-lines:]) if lines else text
+
+    def list_screen_sessions(self):
+        """Parse `screen -ls` (local, or via SSH under --remote) for
+        ollama-* sessions. No registry -- discovery records already track
+        real servers; this only fills the narrow gap where one doesn't exist
+        yet (a --screen allocation still queueing) or you forgot a --name."""
+        try:
+            result = self._screen_run(['screen', '-ls'])
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            # `screen -ls` conventionally exits nonzero when nothing is
+            # running ("No Sockets found...") -- that's an empty list, not
+            # a failure to look.
+            text = getattr(exc, 'stdout', None) or getattr(exc, 'stderr', None) or str(exc)
+            if isinstance(text, str) and 'no sockets found' in text.lower():
+                return []
+            raise
+        text = (result.stdout or '') + (getattr(result, 'stderr', '') or '')
+        return sorted(set(re.findall(r'\d+\.(ollama-[\w.-]+)\s', text)))
+
+    def _allocate_remote_screen(self, name, profile, account, walltime, yes, dry_run, gpu_spread):
+        """Delegate to `nersc-ollama allocate --screen` run *on the login
+        node* over SSH, rather than screen-wrapping a locally-built salloc
+        command: allocation_command() bakes in this Manager's own
+        config_path/ollama_root, which are meaningless off the NERSC side."""
+        safe_name(name)
+        remote_cmd = self._remote_cli_argv('allocate', '--screen', '--name', name, '--profile', profile)
+        if account:
+            remote_cmd += ['--account', account]
+        if walltime:
+            remote_cmd += ['--time', walltime]
+        if gpu_spread is not None:
+            remote_cmd += ['--gpu-spread' if gpu_spread else '--no-gpu-spread']
+        remote_cmd += ['--yes']  # confirmation already happens below, on this side
+        print(shlex.join(remote_cmd), flush=True)
+        if dry_run:
+            return
+        confirm(f'Request this Slurm allocation on {self.remote}, detached in a screen session there?', yes)
+        self._remote_run(remote_cmd, capture_output=True, text=True, timeout=25)
+
+    def allocate(self, name, profile, account=None, walltime=None, yes=False, dry_run=False, screen=False,
+                 gpu_spread=None):
+        if gpu_spread is not None and profile != 'gpu':
+            raise ValueError('--gpu-spread/--no-gpu-spread only apply to --profile gpu.')
+        if self.remote:
+            if not screen:
+                raise RuntimeError('--remote allocate requires --screen (a foreground salloc '
+                                    'cannot run over one SSH round-trip).')
+            return self._allocate_remote_screen(name, profile, account, walltime, yes, dry_run, gpu_spread)
         if os.environ.get('SLURM_JOB_ID'):
             raise RuntimeError('Already inside an allocation; use serve rather than nesting salloc.')
         self.require_installation()
-        args = self.allocation_command(name, profile, account, walltime)
+        args = self.allocation_command(name, profile, account, walltime, spread_override=gpu_spread)
         print(shlex.join(args), flush=True)
         if dry_run:
             return
         confirm('Request these Slurm resources?', yes)
+        if gpu_spread is not None:
+            # Persisted only once we're actually proceeding, matching the TUI
+            # switch's "applies to newly started GPU servers" semantics.
+            self.set_gpu_spread(gpu_spread)
+            print(f'GPU spreading {"enabled" if gpu_spread else "disabled"} for future GPU allocations.', flush=True)
+        if screen:
+            session = 'ollama-' + name
+            self.start_screen_session(session, args)
+            print(f"Started detached screen session '{session}' on the login node. "
+                  f"Use `nersc-ollama peek {name}` or `logs {name}` to check progress; "
+                  "it survives this connection dropping.", flush=True)
+            return
         return run(args, stream_errors=True)
 
     def job(self, job_id):
         if not re.fullmatch(r'\d+', str(job_id)):
             raise ValueError('Invalid job ID.')
-        result = run(['squeue', '--noheader', '--jobs', str(job_id), '--format', '%i|%u|%T|%N|%L'],
-                     capture_output=True, text=True, timeout=15)
+        squeue = ['squeue', '--noheader', '--jobs', str(job_id), '--format', '%i|%u|%T|%N|%L']
+        runner = self._remote_run if self.remote else run
+        try:
+            result = runner(squeue, capture_output=True, text=True, timeout=25 if self.remote else 15)
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            # squeue exits nonzero once a job ages out of Slurm's accounting
+            # entirely ("Invalid job id specified") -- that means the job is
+            # gone, not that the query failed. Anything else (squeue missing,
+            # permission denied, timeout, SSH auth failure in --remote mode)
+            # still raises, so callers like delete_expired() stay fail-closed
+            # on genuine scheduler errors.
+            stderr = getattr(exc, 'stderr', None) or str(exc)
+            if isinstance(stderr, str) and 'invalid job id' in stderr.lower():
+                return None
+            raise
         for line in result.stdout.splitlines():
             fields = line.strip().split('|')
             if len(fields) == 5 and fields[0] == str(job_id):
@@ -374,6 +611,8 @@ class Manager:
         atomic_json(self.runtime / 'dismissed-sessions' / (identity + '.json'), {'id': identity})
 
     def list_servers(self, *, dashboard=False):
+        if self.remote:
+            return self._list_servers_remote()
         result = []
         for path in sorted(self.records.glob('*.json')):
             if dashboard and (self.runtime / 'dismissed-sessions' / path.name).exists():
@@ -387,6 +626,17 @@ class Manager:
             except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
                 result.append({'id': path.stem, 'name': path.stem, 'available': False, 'error': str(exc)})
         return result
+
+    def _list_servers_remote(self):
+        """Discovery over SSH: invoke `status --json` on the login node and
+        parse its stdout, rather than reimplementing discovery remotely. The
+        remote side has already run full validate_record() on every entry."""
+        remote_cmd = self._remote_cli_argv('status', '--json')
+        result = self._remote_run(remote_cmd, capture_output=True, text=True, timeout=25)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f'Unexpected output from remote status --json: {result.stdout[:200]!r}') from exc
 
     def select_for_disconnect(self, identity):
         if not identity:
@@ -579,10 +829,15 @@ class Manager:
             # A dead master can leave its socket behind. Remove only our private socket.
             control.unlink(missing_ok=True)
             port = free_port()
-            args = ['ssh', '-M', '-S', str(control), '-fNT', '-o', 'BatchMode=yes',
-                    '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
-                    '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
-                    '-L', f'127.0.0.1:{port}:127.0.0.1:{record["port"]}', record['host']]
+            args = ['ssh', '-M', '-S', str(control), '-fNT']
+            if self.remote:
+                # An additional hop through the login node: the tunnel still
+                # opens directly to the compute node, just via a ProxyCommand
+                # instead of assuming it's already reachable.
+                args += self._remote_identity_args() + self._compute_proxy_option()
+            args += ['-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
+                     '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+                     '-L', f'127.0.0.1:{port}:127.0.0.1:{record["port"]}', record['host']]
             run(args, timeout=30)
             atomic_json(meta, {'server_id': record['id'], 'remote_port': record['port'], 'port': port})
             try:
@@ -643,7 +898,7 @@ class Manager:
     def models(self, record):
         return request(self.ensure_tunnel(record), '/api/tags').get('models', [])
 
-    def pull(self, record, model):
+    def pull(self, record, model, *, local=False):
         self.require_installation()
         self.check_model(model)
         if local:
@@ -731,4 +986,12 @@ class Manager:
     def stop_allocation(self, record, yes=False):
         self.validate_record(record)
         confirm(f'Cancel your Slurm job {record["job_id"]} ({record["name"]})?', yes)
-        run(['scancel', record['job_id']])
+        runner = self._remote_run if self.remote else run
+        runner(['scancel', record['job_id']])
+
+    def tail_log(self, identity, lines):
+        safe_name(identity)
+        path = str(self.logs / (identity + '.log'))
+        cmd = ['tail', '-n', str(lines), path]
+        runner = self._remote_run if self.remote else run
+        runner(cmd)

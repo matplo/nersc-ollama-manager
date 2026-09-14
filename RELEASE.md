@@ -37,7 +37,7 @@ The package ships three entry points: `nersc-ollama`, `nersc-ollama-tui`, and
 1. Update `version` in `pyproject.toml` and `__version__` in
    `src/nersc_ollama_manager/__init__.py` to the same unused PyPI version.
 2. Commit the change and push the branch. Branch and pull-request builds test
-   Python 3.11, 3.13 and 3.14, build the wheel and source distribution, check
+   Python 3.10, 3.11, 3.13 and 3.14, build the wheel and source distribution, check
    metadata with Twine, and smoke-test the wheel's commands.
 3. Tag that commit using the exact version, optionally prefixed with `v`:
 

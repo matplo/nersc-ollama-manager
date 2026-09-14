@@ -143,6 +143,24 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
                     install.assert_called_once_with('0.34.0')
                     self.assertFalse(app.query_one('#onboarding').display)
 
+    async def test_save_storage_with_existing_ollama_binary_skips_install(self):
+        from nersc_ollama_manager.tui import Dashboard
+        from textual.widgets import Input
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            manager = Manager.initialize(base / 'config.json', base / 'runtime', base / 'ollama')
+            existing = base / 'shared-ollama'
+            existing.touch()
+            app = Dashboard(manager)
+            with patch.object(manager, 'install') as install:
+                async with app.run_test(size=(140, 50)) as pilot:
+                    app.query_one('#ollama_binary_path', Input).value = str(existing)
+                    await pilot.click('#save_storage')
+                    await pilot.pause()
+                    self.assertEqual(manager.binary, existing)
+                    self.assertFalse(app.query_one('#onboarding').display)
+            install.assert_not_called()
+
 
 class AllocationTimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_profile_defaults_override_and_invalid_time(self):

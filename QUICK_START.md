@@ -101,6 +101,95 @@ nersc-ollama codex --server gpu --model MODEL_TAG
 Use the exact tag shown by `models list`. If multiple live servers share a name,
 use the full server ID printed by `status`. Extra Codex arguments go after `--`.
 
+## End-to-end: start on NERSC, drive Codex from your own machine
+
+This ties `allocate --screen` (survives you logging out) and `--remote` (the
+client-side commands) into one concrete walkthrough: start a durable GPU server on
+the **NERSC server side**, then leave it running and launch Codex from the
+**client side** — your own machine here, though it could just as well be a NERSC
+login node or any other machine with SSH access; `--remote` just means "this
+client isn't already sitting on NERSC, hop there over SSH."
+
+### 1. On NERSC: start the server
+
+One-time setup, from a NERSC login-node terminal — use a CFS path, not your home
+directory: it holds discovery records the compute node writes and the login node
+reads back (so both need to see it), plus the Ollama binary and every downloaded
+model (multi-GB to tens of GB each; home quotas are too small):
+
+```sh
+nersc-ollama setup --runtime /global/cfs/cdirs/YOUR_PROJECT/YOUR_USER/nersc-ollama
+nersc-ollama setup --version 0.34.0
+nersc-ollama download MODEL_TAG
+```
+
+`--root` (Ollama's own binary + models) defaults to `<runtime>/ollama_root` and
+is omitted above for that reason — pass it explicitly only if you want the large
+model storage on a *different* filesystem/quota than `runtime`'s small bookkeeping
+(e.g. `$SCRATCH` instead of a smaller CFS project allocation).
+
+Already have an Ollama on NERSC some other way (a module, a shared install)?
+Skip `setup --version` entirely and point at it instead:
+`nersc-ollama setup --ollama-binary /path/to/existing/ollama` — see the
+[README](README.md#first-launch-and-configuration) for details.
+
+Request the allocation **detached in a screen session**, so it survives you logging
+out or your connection dropping. Add `--gpu-spread` here too if you want Ollama
+spread across all requested GPUs rather than packed onto as few as fit the model —
+it's persisted for future GPU allocations (like the TUI's **Spread across GPUs**
+switch), not just this one:
+
+```sh
+nersc-ollama allocate --profile gpu --account YOUR_ACCOUNT_g --name gpu --time 04:00:00 --screen --gpu-spread
+```
+
+This prints the `salloc ...` command, asks you to confirm, starts a `screen`
+session named `ollama-gpu`, types that command into it, and returns immediately —
+unlike a plain `allocate`, it does not hold your terminal open. Check on it:
+
+```sh
+nersc-ollama sessions   # confirm the ollama-gpu session exists
+nersc-ollama peek gpu   # one-shot look at its output, e.g. "still queueing"
+nersc-ollama status     # once ready, shows it available with remaining time
+```
+
+You can now log out of NERSC entirely — the job keeps running.
+
+### 2. From your own machine: launch Codex against it
+
+One-time setup, on your own machine (not NERSC) — a bare config, no Ollama
+install needed unless you also want local `models pull`:
+
+```sh
+nersc-ollama setup --runtime /local/path/nersc-ollama
+```
+
+Add the `remote_*` fields to that config (or pass `--remote-host` each time instead —
+see the [README](README.md#from-outside-nersc) for every field):
+
+```json
+{
+  "remote_login_host": "saul.nersc.gov",
+  "remote_user": "YOUR_NERSC_USERNAME",
+  "remote_identity": "~/.ssh/nersc"
+}
+```
+
+Then, from your project directory on your own machine:
+
+```sh
+nersc-ollama --remote status                              # see the gpu server from step 1
+nersc-ollama --remote codex --server gpu --model MODEL_TAG
+```
+
+Codex now runs **locally**, editing files in your current directory, while only
+Ollama inference is tunneled to the compute node started in step 1. Quitting Codex
+leaves the NERSC allocation running; end it deliberately when you're done with
+`nersc-ollama stop --server gpu` directly on NERSC, or `nersc-ollama --remote stop
+--server gpu` from your own machine. Wrap the `codex` invocation in your own
+`screen`/`tmux` session if you want it to survive your own terminal closing too —
+it's a plain local process, no special support needed.
+
 ## Common questions
 
 - **Downloaded models are visible, but Codex won't start:** select a running server;
@@ -184,10 +273,11 @@ After upgrading, open a new TUI SSH shell to receive the exported binding.
 Shell scripts should begin with `#!/usr/bin/env bash`.
 
 Select the **GPU** profile and toggle **Spread across GPUs** to save the Ollama
-placement preference. New GPU workers set `OLLAMA_SCHED_SPREAD` from
-`profiles.gpu.sched_spread` in the manager configuration; no shell export is
-needed. When enabled, the Slurm step also uses `--gpu-bind none` so the single
-Ollama process can see the full GPU allocation. Turning it off permits Ollama to
-use one GPU when the model fits.
+placement preference, or from the CLI, add `--gpu-spread`/`--no-gpu-spread` to
+`allocate --profile gpu` (see step 1 of the [end-to-end walkthrough](#1-on-nersc-start-the-server)
+above). New GPU workers set `OLLAMA_SCHED_SPREAD` from `profiles.gpu.sched_spread`
+in the manager configuration; no shell export is needed. When enabled, the Slurm
+step also uses `--gpu-bind none` so the single Ollama process can see the full
+GPU allocation. Turning it off permits Ollama to use one GPU when the model fits.
 Existing servers are unchanged. Without a saved preference, the environment
 variable remains the fallback. Spreading does not guarantee faster generation.
