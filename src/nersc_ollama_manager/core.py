@@ -965,10 +965,17 @@ class Manager:
         if 'cloud' in model.lower():
             raise ValueError('Cloud models are outside this local-inference workflow.')
 
-    def codex_catalog(self, record, model, info):
-        """Supply explicit local-model metadata rather than Codex's hosted fallback."""
+    def codex_catalog(self, record, model, info, *, context_override=None):
+        """Supply explicit local-model metadata rather than Codex's hosted fallback.
+
+        context_override lets a client request more than the server's own
+        profile default (record['context_length'], fixed at `serve()` time) --
+        Ollama's context length is only a default, not a hard ceiling: given a
+        larger num_ctx per request, it reloads the model to fit, GPU memory
+        permitting. Still capped by the model's own advertised maximum below;
+        never persisted or sent to the server ahead of time."""
         profile = self.config['profiles'][record.get('profile', 'cpu')]
-        context = record.get('context_length', profile['context'])
+        context = context_override if context_override is not None else record.get('context_length', profile['context'])
         model_info = info.get('model_info', {})
         architecture = model_info.get('general.architecture', '')
         maximum = model_info.get(architecture + '.context_length')
@@ -994,7 +1001,7 @@ class Manager:
         atomic_json(path, catalog, create_only=True)
         return path, context
 
-    def codex_launch_info(self, record, model, *, local=False):
+    def codex_launch_info(self, record, model, *, local=False, context=None):
         """Resolve the endpoint and generated metadata used for a Codex launch."""
         self.check_model(model)
         if local:
@@ -1009,15 +1016,15 @@ class Manager:
         info = request(port, '/api/show', {'model': model})
         if 'tools' not in info.get('capabilities', []):
             raise RuntimeError('This model does not advertise tool support required for coding agents.')
-        catalog, context = self.codex_catalog(record, model, info)
+        catalog, context = self.codex_catalog(record, model, info, context_override=context)
         return {'server': record.get('id', '—'), 'host': record.get('host', '—'), 'port': port,
                 'model': model, 'context': context, 'catalog': catalog}
 
-    def codex_command(self, record, model, extra=(), *, local=False, launch=None):
+    def codex_command(self, record, model, extra=(), *, local=False, launch=None, context=None):
         codex = shutil.which('codex')
         if not codex:
             raise RuntimeError('codex is not on PATH; launch from an environment containing Codex.')
-        launch = launch or self.codex_launch_info(record, model, local=local)
+        launch = launch or self.codex_launch_info(record, model, local=local, context=context)
         port, catalog, context = launch['port'], launch['catalog'], launch['context']
         # Custom provider allows any selected local port without editing user config.
         args = [codex, '-m', model, '-c', 'model_provider="nersc_ollama"',

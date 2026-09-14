@@ -66,6 +66,10 @@ def parser():
         cmd.add_argument('--server')
         if name == 'codex':
             cmd.add_argument('--model', required=True)
+            cmd.add_argument('--context', type=int,
+                              help='Override the advertised context window (tokens), still capped by the '
+                                   "model's own maximum. Does not change the running server's own allocation -- "
+                                   'Ollama reloads the model to fit on demand, GPU memory permitting.')
             cmd.add_argument('codex_args', nargs=argparse.REMAINDER, help='Arguments after -- go to Codex')
         if name == 'stop':
             cmd.add_argument('--yes', action='store_true')
@@ -183,7 +187,7 @@ def main(argv=None):
                 extra = args.codex_args
                 if extra[:1] == ['--']:
                     extra = extra[1:]
-                return subprocess.call(manager.codex_command(record, args.model, extra))
+                return subprocess.call(manager.codex_command(record, args.model, extra, context=args.context))
         return 0
     except KeyboardInterrupt:
         return 130

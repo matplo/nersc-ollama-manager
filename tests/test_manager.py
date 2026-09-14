@@ -116,6 +116,33 @@ class ManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.m.check_model('test:cloud')
 
+    def test_codex_context_override_still_capped_by_model_maximum(self):
+        # Ollama's own context length is a default, not a hard ceiling -- a
+        # client can request more (GPU memory permitting) than the profile's
+        # configured context, but never more than the model itself supports.
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+             patch('nersc_ollama_manager.core.request', side_effect=[{'models': [{'name': 'test:latest'}]},
+                                                                      {'capabilities': ['tools']}]):
+            launch = self.m.codex_launch_info(self.record, 'test', context=131072)
+        self.assertEqual(launch['context'], 131072)  # no model_info.*.context_length -> no cap applied
+
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+             patch('nersc_ollama_manager.core.request', side_effect=[{'models': [{'name': 'test:latest'}]},
+                                                                      {'capabilities': ['tools'],
+                                                                       'model_info': {'general.architecture': 'qwen3',
+                                                                                      'qwen3.context_length': 40000}}]):
+            launch = self.m.codex_launch_info(self.record, 'test', context=131072)
+        self.assertEqual(launch['context'], 40000)  # requested more than the model supports -> capped
+
+        with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
+             patch.object(self.m, 'ensure_tunnel', return_value=34567), \
+             patch('nersc_ollama_manager.core.request', side_effect=[{'models': [{'name': 'test:latest'}]},
+                                                                      {'capabilities': ['tools']}]):
+            command = self.m.codex_command(self.record, 'test', context=200000)
+        self.assertIn('model_context_window=200000', command)
+
     def test_missing_model(self):
         with patch('nersc_ollama_manager.core.shutil.which', return_value='/mock/bin/codex'), \
              patch.object(self.m, 'ensure_tunnel', return_value=34567), \
@@ -158,6 +185,10 @@ class ManagerTests(unittest.TestCase):
     def test_passthrough(self):
         args = parser().parse_args(['codex', '--model', 'test', '--', '--no-alt-screen'])
         self.assertEqual(args.codex_args, ['--', '--no-alt-screen'])
+
+    def test_codex_context_flag_parses(self):
+        self.assertIsNone(parser().parse_args(['codex', '--model', 'test']).context)
+        self.assertEqual(parser().parse_args(['codex', '--model', 'test', '--context', '131072']).context, 131072)
 
 
 class DashboardTests(unittest.IsolatedAsyncioTestCase):

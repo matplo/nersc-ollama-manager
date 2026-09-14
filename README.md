@@ -348,6 +348,15 @@ uses the server record's configured context (or the profile for older records),
 capped by the model's advertised maximum when available. New workers record their
 context at startup, so later configuration edits do not change that recorded value.
 
+`codex --context TOKENS` overrides this for one invocation, still capped by the
+model's own maximum. Ollama's context length is a default, not a hard ceiling: the
+server itself keeps whatever `OLLAMA_CONTEXT_LENGTH` it started with, but a
+per-request `num_ctx` larger than that gets honored by reloading the model to fit,
+GPU memory permitting — worth trying if a profile's default context (65,536 by
+default) is leaving GPU memory unused for a model whose own maximum is larger.
+Nothing is persisted or sent ahead of time; if the requested context doesn't fit,
+Ollama's own reload fails at generation time, not at `codex` launch.
+
 Catalogs are named by content hash to avoid conflicts between simultaneous
 sessions. Global Codex settings are not rewritten. Restart Codex through the
 manager to pick up the generated catalog; an existing Codex session is unaffected.
