@@ -175,7 +175,7 @@ Optional configuration (existing configs need no migration):
   "remote_user": "your_nersc_username",
   "remote_identity": "~/.ssh/nersc",
   "remote_python": "/path/to/venv/bin/python",
-  "remote_config": null
+  "remote_config": "/path/to/your/nersc/config.json"
 }
 ```
 
@@ -183,12 +183,20 @@ Prefer a specific login node over the round-robin `perlmutter.nersc.gov` alias t
 a different host key on every connection. `remote_user` may differ from the local
 account name. `remote_identity` defaults to `~/.ssh/nersc` (the sshproxy-issued key,
 ~24h lifetime — an auth failure over `--remote` usually means it needs renewing, not a
-code bug). Set `remote_python` to the interpreter on the NERSC side that has
-`nersc-ollama-manager` installed: a non-interactive `ssh host command` often does not
-get interactive-shell PATH/henv activation, so without it a bare `nersc-ollama` is
-tried and fails with a clear error naming this field. `remote_config` overrides
-`--config` on the remote side only; omit it to let the remote side resolve its own
-default.
+code bug).
+
+**Set `remote_python` and `remote_config` together, in practice** — both sourced
+directly from `nersc-ollama doctor` run *interactively* on the login node (its
+`"python"` and `"config"` fields). A non-interactive `ssh host command` (exactly
+what `--remote` runs) does not source whatever env var, module load, or henv
+activation your interactive shell relies on to find either one, so without these
+set explicitly it silently falls back to a bare `nersc-ollama` on PATH and the
+plain default config path — which may not even be the ones you actually use. The
+visible symptom of only setting one, or neither: `--remote status` succeeds with
+zero servers, no error, even though `status` run directly on NERSC shows some
+(the mismatch prints a hint to stderr for exactly this reason, but setting both
+up front avoids it entirely). `remote_config` becomes `--config` on the remote
+side only.
 
 ## Surviving a dropped connection
 

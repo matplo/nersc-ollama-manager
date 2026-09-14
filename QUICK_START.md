@@ -164,16 +164,26 @@ install needed unless you also want local `models pull`:
 nersc-ollama setup --runtime /local/path/nersc-ollama
 ```
 
-Add the `remote_*` fields to that config (or pass `--remote-host` each time instead —
+Back on NERSC, run `nersc-ollama doctor` **interactively** and note its `"python"`
+and `"config"` fields — you need both, not just the login host, because a
+non-interactive SSH session (what `--remote` runs) won't see whatever env var or
+module load your interactive shell uses to find either one. Add all of this to
+the client config (or pass `--remote-host` each time instead of `remote_login_host` —
 see the [README](README.md#from-outside-nersc) for every field):
 
 ```json
 {
   "remote_login_host": "saul.nersc.gov",
   "remote_user": "YOUR_NERSC_USERNAME",
-  "remote_identity": "~/.ssh/nersc"
+  "remote_identity": "~/.ssh/nersc",
+  "remote_python": "PASTE_doctor's_python_FIELD_HERE",
+  "remote_config": "PASTE_doctor's_config_FIELD_HERE"
 }
 ```
+
+Skipping `remote_python`/`remote_config` is the most common way this goes wrong:
+`--remote status` silently succeeds with zero servers (no error) instead of
+matching what `status` shows when run directly on NERSC.
 
 Then, from your project directory on your own machine:
 

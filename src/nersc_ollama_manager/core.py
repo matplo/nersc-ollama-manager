@@ -585,7 +585,15 @@ class Manager:
 
     def validate_record(self, record):
         import getpass
-        if record.get('schema_version') != 1 or record.get('uid') != os.getuid():
+        # record['uid']/job['user'] are NERSC-side identity, meaningless compared
+        # against this process's own os.getuid()/getpass.getuser() when self.remote
+        # is set (this process is running on an entirely different machine). The
+        # remote side already ran this exact check against its own identity while
+        # building the record via _list_servers_remote()'s `status --json` call;
+        # here, re-validate the *username* against the configured remote_user (the
+        # intended NERSC identity) instead, and skip the numeric uid check, which
+        # has no meaningful client-side equivalent to compare against.
+        if record.get('schema_version') != 1 or (not self.remote and record.get('uid') != os.getuid()):
             raise ValueError('Unrecognized discovery record or wrong owner.')
         safe_name(record['id'])
         safe_name(record['name'])
@@ -594,7 +602,8 @@ class Manager:
         if not isinstance(record['port'], int) or not 1024 <= record['port'] <= 65535:
             raise ValueError('Invalid server port.')
         job = self.job(record['job_id'])
-        if not job or job['user'] != getpass.getuser() or job['state'] != 'RUNNING':
+        expected_user = (self.config.get('remote_user') or getpass.getuser()) if self.remote else getpass.getuser()
+        if not job or job['user'] != expected_user or job['state'] != 'RUNNING':
             raise RuntimeError('Allocation is no longer running or is not owned by this user.')
         # One-node allocations render a single hostname, not a compressed hostlist.
         if job['nodes'].split('.')[0] != record['host']:
@@ -634,13 +643,38 @@ class Manager:
         remote_cmd = self._remote_cli_argv('status', '--json')
         result = self._remote_run(remote_cmd, capture_output=True, text=True, timeout=25)
         try:
-            return json.loads(result.stdout)
+            records = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f'Unexpected output from remote status --json: {result.stdout[:200]!r}') from exc
+        if not records and not (self.config.get('remote_config') and self.config.get('remote_python')):
+            # A non-interactive `ssh host command` often doesn't see whatever
+            # env var/module load selects your config interactively, so this
+            # silently-empty result is more often a config mismatch than an
+            # honest "no servers" -- print to stderr, not stdout, so it never
+            # pollutes `status --json`'s machine-readable output.
+            print(f'Note: {self.remote} reported zero servers. If you expected some, this SSH session may be '
+                  "resolving a different config than your interactive shell does. Run `nersc-ollama doctor` "
+                  "on the login node and set matching remote_config/remote_python in your local configuration.",
+                  file=os.sys.stderr)
+        return records
 
     def select_for_disconnect(self, identity):
         if not identity:
             return self.select()
+        if self.remote:
+            matches = [r for r in self.list_servers() if identity in (r['id'], r['name'])]
+            if len(matches) != 1:
+                raise RuntimeError('Specify one exact server ID for disconnect.')
+            record = matches[0]
+            safe_name(record['id'])
+            # tunnel_paths()'s id-derived digest and a (possibly placeholder)
+            # host string are all disconnect actually needs to locate/close
+            # this client's own local control socket -- unlike ensure_tunnel(),
+            # closing an expired server's tunnel deliberately doesn't require
+            # the allocation to still be running, so list_servers()'s reduced
+            # shape for an unavailable record (no host/port) is fine here.
+            return {'id': record['id'], 'name': record.get('name', record['id']),
+                    'host': record.get('host', record['id'])}
         matches = []
         for path in self.records.glob('*.json'):
             try:

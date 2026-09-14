@@ -88,6 +88,54 @@ class RemoteManagerTests(unittest.TestCase):
         self.assertEqual(args[0], 'ssh')
         self.assertIn('tail -n 50', args[-1])
 
+    # -- validate_record(): NERSC-side identity, not this process's own -----
+    # (a real bug found live: --remote codex/tunnel/stop raised "Unrecognized
+    # discovery record or wrong owner" for a genuinely valid record, because
+    # record['uid']/job['user'] were compared against the *client's* own
+    # os.getuid()/getpass.getuser() instead of the NERSC-side identity.)
+
+    def test_validate_record_ignores_client_local_uid_under_remote(self):
+        self.m.remote = 'saul.nersc.gov'
+        record = {**self.record, 'uid': 999999999}  # a NERSC uid; certainly not this test process's own
+        job = dict(id='123', user=getpass.getuser(), state='RUNNING', nodes='nid000001', remaining='10:00')
+        with patch.object(self.m, 'job', return_value=job):
+            self.m.validate_record(record)  # must not raise
+
+    def test_validate_record_checks_username_against_remote_user(self):
+        self.m.remote = 'saul.nersc.gov'
+        self.m.config['remote_user'] = 'nersc_user'
+        record = {**self.record, 'uid': 999999999}
+        matching_job = dict(id='123', user='nersc_user', state='RUNNING', nodes='nid000001', remaining='10:00')
+        with patch.object(self.m, 'job', return_value=matching_job):
+            self.m.validate_record(record)  # must not raise: job user matches remote_user
+        wrong_job = dict(id='123', user='someone_else', state='RUNNING', nodes='nid000001', remaining='10:00')
+        with patch.object(self.m, 'job', return_value=wrong_job), self.assertRaises(RuntimeError):
+            self.m.validate_record(record)
+
+    def test_validate_record_still_enforces_uid_locally(self):
+        # self.remote is None (default) here -- local mode must still reject
+        # a record owned by a different local uid.
+        record = {**self.record, 'uid': self.record['uid'] + 1}
+        with self.assertRaises(ValueError):
+            self.m.validate_record(record)
+
+    # -- select_for_disconnect(): must not glob the client's own empty local -
+    # runtime/servers directory under --remote (a second instance of the same
+    # bug class, found by audit rather than live reproduction).
+
+    def test_select_for_disconnect_remote_uses_list_servers(self):
+        self.m.remote = 'saul.nersc.gov'
+        reduced = {'id': 'x', 'name': 'gpu', 'available': False, 'error': 'gone'}
+        with patch.object(self.m, 'list_servers', return_value=[reduced]):
+            record = self.m.select_for_disconnect('gpu')
+        self.assertEqual(record['id'], 'x')
+        self.assertEqual(record['host'], 'x')  # no host in the reduced shape -- falls back to id
+
+    def test_select_for_disconnect_remote_requires_exact_match(self):
+        self.m.remote = 'saul.nersc.gov'
+        with patch.object(self.m, 'list_servers', return_value=[]), self.assertRaises(RuntimeError):
+            self.m.select_for_disconnect('missing')
+
     # -- list_servers() remote branch reuses `status --json` --------------
 
     def test_list_servers_remote_parses_status_json(self):
@@ -112,6 +160,24 @@ class RemoteManagerTests(unittest.TestCase):
         remote_cmd = run_mock.call_args[0][0][-1]
         self.assertIn('/path/to/python -m nersc_ollama_manager', remote_cmd)
         self.assertIn('--config /nersc/home/config.json status --json', remote_cmd)
+
+    def test_list_servers_remote_empty_without_remote_config_prints_hint(self):
+        self.m.remote = 'saul.nersc.gov'
+        with patch('nersc_ollama_manager.core.run', return_value=Mock(stdout='[]')), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            result = self.m.list_servers()
+        self.assertEqual(result, [])
+        self.assertIn('remote_config', stderr.getvalue())
+        self.assertIn('doctor', stderr.getvalue())
+
+    def test_list_servers_remote_empty_with_remote_config_is_quiet(self):
+        self.m.remote = 'saul.nersc.gov'
+        self.m.config['remote_python'] = '/path/to/python'
+        self.m.config['remote_config'] = '/nersc/home/config.json'
+        with patch('nersc_ollama_manager.core.run', return_value=Mock(stdout='[]')), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.m.list_servers()
+        self.assertEqual(stderr.getvalue(), '')
 
     def test_list_servers_remote_bad_json_is_actionable(self):
         self.m.remote = 'saul.nersc.gov'
